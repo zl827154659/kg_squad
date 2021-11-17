@@ -82,7 +82,7 @@ class Model(AlbertPreTrainedModel):
         return loss, right_num, self._to_tensor(idx.size(0), idx.device), logits
 
     def _forward(self, idx, input_ids, attention_mask, token_type_ids):
-        # [B, 2, L] => [B*2, L]
+        # [B, 5, L] => [B*5, L]
         flat_input_ids = input_ids.view(-1, input_ids.size(-1))
         flat_attention_mask = attention_mask.view(-1, attention_mask.size(-1))
         flat_token_type_ids = token_type_ids.view(-1, token_type_ids.size(-1))

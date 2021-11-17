@@ -16,11 +16,12 @@ import pdb
 
 
 class BaseTrainer:
-    def __init__(self, model, multi_gpu, device, print_step, output_model_dir, vn):
+    def __init__(self, model, multi_gpu, device, print_step, gradient_accumulation_steps, output_model_dir, vn):
         self.model = model.to(device)
         self.device = device
         self.multi_gpu = multi_gpu
         self.print_step = print_step
+        self.gradient_accumulation_steps = gradient_accumulation_steps
         self.output_model_dir = output_model_dir
 
         self.vn = vn
@@ -40,7 +41,7 @@ class BaseTrainer:
 
         best_dev_loss = float('inf')
         best_dev_acc = 0
-        self.global_step = 0
+        self.completed_step = 0
         self.train_record.init()
         self.model.zero_grad()
         if freeze_lm_epochs > 0:
@@ -58,9 +59,21 @@ class BaseTrainer:
             print(f'---- Epoch: {epoch+1:02} ----')
             for step, batch in enumerate(tqdm(train_dataloader, desc='Train')):
                 self.model.train()
-                self._step(batch)
+                results = self._forward(batch, self.train_record)
+                loss = results[0]
+                acc = results[1]
+                loss = loss / self.gradient_accumulation_steps
+                acc = acc / self.gradient_accumulation_steps
+                self.train_record.inc([loss.item(), acc.item()])
+                loss.backward()
 
-                if self.global_step % self.print_step == 0:
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(), max_norm=1)  # max_grad_norm = 1
+
+                if step % self.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                    self._step(batch)
+
+                if self.completed_step % self.print_step == 0:
 
                     dev_record = self.evaluate(dev_dataloader)
                     self.model.zero_grad()
@@ -69,22 +82,23 @@ class BaseTrainer:
                     current_acc = dev_record.list()[1]
                     if current_acc > best_dev_acc:
                         best_dev_acc = current_acc
-                        self.save_model()
+                        self.save_best(best_acc=best_dev_acc)
 
                     self.train_record.init()
 
         dev_record = self.evaluate(dev_dataloader)
         self._report(self.train_record, dev_record)
 
+        dloss, dacc, _ = dev_record.avg()
         if save_last:
-            self.save_model()
+            self.save_last(last_acc=dacc)
 
-    def _forward(self, batch, record):
+    def _forward(self, batch):
         batch = tuple(t.to(self.device) for t in batch)
-        loss, acc = self.model(*batch)
-        loss, acc = self._mean_sum((loss, acc))
-        record.inc([loss.item(), acc.item()])
-        return loss
+        all_results = self.model(*batch)
+        results = all_results[:3]
+        results = tuple([results[0].mean(), results[1].sum(), results[2].sum()])
+        return results
 
     def _mean(self, tuples):
         if self.multi_gpu:
@@ -100,16 +114,10 @@ class BaseTrainer:
         return tuples
 
     def _step(self, batch):
-        loss = self._forward(batch, self.train_record)
-        loss.backward()
-
-        torch.nn.utils.clip_grad_norm_(
-            self.model.parameters(), max_norm=1)  # max_grad_norm = 1
-
         self.optimizer.step()
         self.scheduler.step()
         self.model.zero_grad()
-        self.global_step += 1
+        self.completed_step += 1
 
     def evaluate(self, dataloader, desc='Eval'):
         record = Vn(self.vn)
@@ -117,7 +125,11 @@ class BaseTrainer:
         for batch in dataloader:
             self.model.eval()
             with torch.no_grad():
-                self._forward(batch, record)
+                results = self._forward(batch)
+                results = tuple([results[0] / self.gradient_accumulation_steps,
+                                 results[1],
+                                 results[2]])
+                record.inc([it.item() for it in results])
 
         return record
 
@@ -155,3 +167,20 @@ class BaseTrainer:
         model_to_save = self.model.module if hasattr(self.model, "module") else self.model
         model_to_save.save_pretrained(self.output_model_dir)
 
+    def save_best(self, best_acc):
+        best_model_dir = os.path.join(self.output_model_dir, 'best_model')
+        mkdir_if_notexist(os.path.join(best_model_dir, 'best_acc.txt'))
+        with open(os.path.join(best_model_dir, 'best_acc.txt'), 'w') as f:
+            f.write(f'best dev acc: {best_acc}')
+        logger.info('saving model {}'.format(best_model_dir))
+        model_to_save = self.model.module if hasattr(self.model, "module") else self.model
+        model_to_save.save_pretrained(best_model_dir)
+
+    def save_last(self, last_acc):
+        last_model_dir = os.path.join(self.output_model_dir, 'last_model')
+        mkdir_if_notexist(os.path.join(last_model_dir, 'last_acc.txt'))
+        with open(os.path.join(last_model_dir, 'last_acc.txt'), 'w') as f:
+            f.write(f'last dev acc: {last_acc}')
+        logger.info('saving model {}'.format(last_model_dir))
+        model_to_save = self.model.module if hasattr(self.model, "module") else self.model
+        model_to_save.save_pretrained(last_model_dir)

@@ -24,11 +24,11 @@ except ImportError:
 
 
 class Trainer(BaseTrainer):
-    def __init__(self, model, multi_gpu, device, print_step,
+    def __init__(self, model, multi_gpu, device, print_step, gradient_accumulation_steps,
                  output_model_dir, fp16):
 
         super(Trainer, self).__init__(
-            model, multi_gpu, device, print_step, output_model_dir, vn=3)
+            model, multi_gpu, device, print_step, gradient_accumulation_steps, output_model_dir, vn=3)
         self.fp16 = fp16
         self.multi_gpu = multi_gpu
         self.tb_step = 0
@@ -36,23 +36,78 @@ class Trainer(BaseTrainer):
 
         print("fp16 is {}".format(fp16))
             
-        
+    def train(self, epoch_num, train_dataloader, dev_dataloader,
+              save_last=True, freeze_lm_epochs=0):
+        best_dev_loss = float('inf')
+        best_dev_acc = 0
+        self.completed_step = 0
+        self.train_record.init()
+        self.model.zero_grad()
+        if freeze_lm_epochs > 0:
+            if self.multi_gpu:
+                self.model.module.freeze_lm()
+            else:
+                self.model.freeze_lm()
+
+        print_times = 5
+        self.print_step = len(train_dataloader) // print_times
+        print(f'print_step : {self.print_step}')
+
+
+        for epoch in range(int(epoch_num)):
+            if epoch == freeze_lm_epochs and freeze_lm_epochs > 0:
+                if self.multi_gpu:
+                    self.model.module.unfreeze_lm()
+                else:
+                    self.model.unfreeze_lm()
+
+            print(f'---- Epoch: {epoch+1:02} ----')
+            for step, batch in enumerate(tqdm(train_dataloader, desc='Train')):
+                self.model.train()
+                results = self._forward(batch)
+                results = tuple([results[0] / self.gradient_accumulation_steps,
+                                 results[1] ,
+                                 results[2] ])
+                self.train_record.inc([it.item() for it in results])
+                loss = results[0]
+                if self.fp16:
+                    with amp.scale_loss(loss, self.optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                    torch.nn.utils.clip_grad_norm_(amp.master_params(self.optimizer), 1)
+                else:
+                    loss.backward()
+
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), max_norm=1)  # max_grad_norm = 1
+
+                if step % self.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                    self._step(batch)
+
+                if step % self.print_step == 0:
+
+                    dev_record = self.evaluate(dev_dataloader)
+                    self.model.zero_grad()
+
+                    self._report(self.train_record, dev_record)
+                    current_acc = dev_record.list()[1]
+                    if current_acc > best_dev_acc:
+                        best_dev_acc = current_acc
+                        self.save_best(best_acc=best_dev_acc / dev_record.list()[2])
+
+                    self.train_record.init()
+
+        dev_record = self.evaluate(dev_dataloader)
+        self._report(self.train_record, dev_record)
+
+        dloss, dacc, _ = dev_record.avg()
+        if save_last:
+            self.save_last(last_acc=dacc)
+
     def _step(self, batch):
-        loss = self._forward(batch, self.train_record)
-        if self.fp16:
-            with amp.scale_loss(loss, self.optimizer) as scaled_loss:
-                scaled_loss.backward()
-            torch.nn.utils.clip_grad_norm_(amp.master_params(self.optimizer), 1) 
-        else:
-            loss.backward()
-
-            torch.nn.utils.clip_grad_norm_(
-                self.model.parameters(), max_norm=1)  # max_grad_norm = 1
-
         self.optimizer.step()
         self.scheduler.step()
         self.model.zero_grad()
-        self.global_step += 1
+        self.completed_step += 1
         
     def set_optimizer(self, optimizer):
         if self.fp16:
@@ -61,14 +116,13 @@ class Trainer(BaseTrainer):
             self.model = model
         self.optimizer = optimizer
 
-    def _forward(self, batch, record):
+    def _forward(self, batch):
         batch = clip_batch(batch)
         batch = tuple(t.to(self.device) for t in batch)
-        all_result = self.model(*batch)
-        result = all_result[:3]
-        result = tuple([result[0].mean(), result[1].sum(), result[2].sum()])
-        record.inc([it.item() for it in result])
-        return result[0]
+        all_results = self.model(*batch)
+        results = all_results[:3]
+        results = tuple([results[0].mean(), results[1].sum(), results[2].sum()])
+        return results
 
     def _report(self, train_record, devlp_record):
         # record: loss, right_num, all_num
@@ -109,7 +163,7 @@ class SelectReasonableText:
         self.model = model
         self.trainer = Trainer(
             model, multi_gpu, device,
-            self.config.print_step, self.config.output_model_dir, self.config.fp16)
+            self.config.print_step, self.config.gradient_accumulation_steps, self.config.output_model_dir, self.config.fp16)
 
     def train(self, train_dataloader, devlp_dataloader, save_last=True):
         t_total = len(train_dataloader) * self.config.num_train_epochs
@@ -136,6 +190,7 @@ class SelectReasonableText:
             self.model.eval()
             batch_labels = batch[4] if self.config.predict_dev else torch.zeros_like(batch[4])
             with torch.no_grad():
+                # all_ret : loss, right_num, all_num, logits
                 all_ret = self.model(batch[0].cuda(),batch[1].cuda(),batch[2].cuda(),batch[3].cuda(),batch_labels.cuda())
                 ret = all_ret[3]
                 idx.extend(batch[0].cpu().numpy().tolist())
@@ -156,6 +211,12 @@ def get_args():
     parser.add_argument('--max_seq_length', type=int, default=64)
     parser.add_argument('--freeze_lm_epochs', type=int, default=0, help='freeze LM (ALBERT) until the end of this epoch (epoch number starts at 1). No freezing if =0 (default).')
     parser.add_argument('--no_att_merge',action='store_true', help='do not do attention merge, just use CLS.')
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        type=int,
+        default=1,
+        help="Number of updates steps to accumulate before performing a backward/update pass.",
+    )
 
     # Path parameters
     parser.add_argument('--train_file_name', type=str, default=None)
@@ -163,13 +224,16 @@ def get_args():
     parser.add_argument('--trial_file_name', type=str, default=None)
     parser.add_argument('--pred_file_name', type=str, default=None)
     parser.add_argument('--output_model_dir', type=str, default=None)
-    parser.add_argument('--bert_model_dir', type=str, default='albert-xxlarge-v2')
-    parser.add_argument('--bert_vocab_dir', type=str, default='albert-xxlarge-v2')
+    # parser.add_argument('--bert_model_dir', type=str, default='albert-xxlarge-v2')
+    # parser.add_argument('--bert_vocab_dir', type=str, default='albert-xxlarge-v2')
+    parser.add_argument('--bert_model_dir', type=str, default='albert-base-v2')
+    parser.add_argument('--bert_vocab_dir', type=str, default='albert-base-v2')
     parser.add_argument('--cache_dir', type=str, default=None)
     parser.add_argument('--predict_dir', type=str, default='output/', help='directory of prediction files.')
 
     # Data parameters
     parser.add_argument('--append_answer_text', type=int, default=0, help='append answer text to the question.')
+    parser.add_argument('--append_context', type=int, default=0, help='append context.')
     parser.add_argument('--append_descr', type=int, default=0, help='append wiktionary description.')
     parser.add_argument('--no_triples', action='store_true', help='not appending triples so we do not use ConceptNet.')
 
@@ -249,11 +313,11 @@ if __name__ == '__main__':
     if args.mission == 'train':
         print('load_data', args.train_file_name)
         train_data = load_data(experiment, args.train_file_name, type='json', append_answer_text=args.append_answer_text, 
-            append_descr=args.append_descr, append_triple=(not args.no_triples))
+            append_descr=args.append_descr, append_triple=(not args.no_triples), append_context=args.append_context)
 
         print('load_data', args.devlp_file_name)
         devlp_data = load_data(experiment, args.devlp_file_name, type='json', append_answer_text=args.append_answer_text, 
-            append_descr=args.append_descr, append_triple=(not args.no_triples))
+            append_descr=args.append_descr, append_triple=(not args.no_triples), append_context=args.append_context)
         if args.test_mode:
             print('test mode')
             train_data = train_data[:80]
@@ -262,7 +326,7 @@ if __name__ == '__main__':
     elif args.mission == 'output':
         print('load_data', args.trial_file_name)
         devlp_data = load_data(experiment, args.trial_file_name, type='json', append_answer_text=args.append_answer_text, 
-            append_descr=args.append_descr, append_triple=(not args.no_triples))
+            append_descr=args.append_descr, append_triple=(not args.no_triples), append_context=args.append_context)
     print('get dir {}'.format(args.output_model_dir))
     Path(args.output_model_dir).mkdir(exist_ok=True, parents=True)
     print('load_vocab', args.bert_vocab_dir)
@@ -294,6 +358,7 @@ if __name__ == '__main__':
     if args.mission == 'train':
         srt = SelectReasonableText(args)
         srt.init(Model)
+        print(f'total batch size is {args.batch_size * args.gradient_accumulation_steps}')
         srt.train(train_dataloader, devlp_dataloader, save_last=False)
 
         srt = SelectReasonableText

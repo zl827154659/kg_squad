@@ -47,9 +47,10 @@ class ConceptNetExample:
         
         
     @classmethod
-    def load_from_json(cls, json_obj, append_answer_text=False, append_descr=0, append_triple=True):
+    def load_from_json(cls, json_obj, append_answer_text=False, append_descr=0, append_triple=True, append_context=False):
         choices = json_obj['question']['choices']
         question_concept = json_obj['question']['question_concept']
+        context = json_obj['context']
         def mkinput(question_concept, choice):
             if choice['triple'] and append_triple:
                 triples = ' [SEP] '.join([' '.join(trip) for trip in choice['triple']])
@@ -70,6 +71,8 @@ class ConceptNetExample:
                     '{} [SEP] {} [SEP] {} [SEP] {}'.format(first_triple, json_obj['question']['qc_meaning'], choice['ac_meaning'], following_triple)
             
             text = ' {} [SEP] {} '.format(question_text, triples_temp)
+            if append_context:
+                text = text + f'[SEP] {context}'
             return text
 
         texts = []
