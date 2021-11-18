@@ -314,10 +314,12 @@ if __name__ == '__main__':
         print('load_data', args.train_file_name)
         train_data = load_data(experiment, args.train_file_name, type='json', append_answer_text=args.append_answer_text, 
             append_descr=args.append_descr, append_triple=(not args.no_triples), append_context=args.append_context)
+        print(f'train sample: {train_data[0]}')
 
         print('load_data', args.devlp_file_name)
         devlp_data = load_data(experiment, args.devlp_file_name, type='json', append_answer_text=args.append_answer_text, 
             append_descr=args.append_descr, append_triple=(not args.no_triples), append_context=args.append_context)
+        print(f'dev sample: {devlp_data[0]}')
         if args.test_mode:
             print('test mode')
             train_data = train_data[:80]
@@ -327,6 +329,7 @@ if __name__ == '__main__':
         print('load_data', args.trial_file_name)
         devlp_data = load_data(experiment, args.trial_file_name, type='json', append_answer_text=args.append_answer_text, 
             append_descr=args.append_descr, append_triple=(not args.no_triples), append_context=args.append_context)
+        print(f'prediction sample: {devlp_data[0]}')
     print('get dir {}'.format(args.output_model_dir))
     Path(args.output_model_dir).mkdir(exist_ok=True, parents=True)
     print('load_vocab', args.bert_vocab_dir)
@@ -343,7 +346,7 @@ if __name__ == '__main__':
     if args.mission == 'train':
         train_dataloader = make_dataloader(
             experiment, train_data, tokenizer, batch_size=args.batch_size,
-            drop_last=False, max_seq_length=args.max_seq_length)  # 52 + 3
+            drop_last=False, max_seq_length=args.max_seq_length, shuffle=True)  # 52 + 3
 
         print('train_data %d ' % len(train_data))
 
