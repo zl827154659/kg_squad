@@ -126,7 +126,7 @@ class BaseTrainer:
             self.model.eval()
             with torch.no_grad():
                 results = self._forward(batch)
-                results = tuple([results[0] / self.gradient_accumulation_steps,
+                results = tuple([results[0],
                                  results[1],
                                  results[2]])
                 record.inc([it.item() for it in results])

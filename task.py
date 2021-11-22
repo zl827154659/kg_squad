@@ -1,5 +1,6 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+import numpy
 
 from utils.base_trainer import BaseTrainer
 from utils import get_device
@@ -13,7 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 import pdb
 import json
 from tqdm.autonotebook import tqdm
-
+import numpy as np
 import logging; logging.getLogger("transformers").setLevel(logging.WARNING)
 logging.basicConfig(level = logging.INFO,format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -65,8 +66,8 @@ class Trainer(BaseTrainer):
             for step, batch in enumerate(tqdm(train_dataloader, desc='Train')):
                 self.model.train()
                 results = self._forward(batch)
-                results = tuple([results[0] / self.gradient_accumulation_steps,
-                                 results[1] ,
+                results = tuple([results[0],
+                                 results[1],
                                  results[2] ])
                 self.train_record.inc([it.item() for it in results])
                 loss = results[0]
@@ -80,14 +81,13 @@ class Trainer(BaseTrainer):
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(), max_norm=1)  # max_grad_norm = 1
 
-                if step % self.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
+                if (step + 1) % self.gradient_accumulation_steps == 0 or step == len(train_dataloader) - 1:
                     self._step(batch)
 
-                if step % self.print_step == 0:
+                if step != 0 and (step + 1) % self.print_step == 0:
 
                     dev_record = self.evaluate(dev_dataloader)
                     self.model.zero_grad()
-
                     self._report(self.train_record, dev_record)
                     current_acc = dev_record.list()[1]
                     if current_acc > best_dev_acc:
@@ -184,7 +184,7 @@ class SelectReasonableText:
         idx = []
         labels = []
         predicts = []
-
+        loss = 0
         for batch in dataloader:
             batch = clip_batch(batch)
             self.model.eval()
@@ -192,11 +192,13 @@ class SelectReasonableText:
             with torch.no_grad():
                 # all_ret : loss, right_num, all_num, logits
                 all_ret = self.model(batch[0].cuda(),batch[1].cuda(),batch[2].cuda(),batch[3].cuda(),batch_labels.cuda())
+                loss += all_ret[0].item()
                 ret = all_ret[3]
                 idx.extend(batch[0].cpu().numpy().tolist())
                 result.extend(ret.cpu().numpy().tolist())
                 labels.extend(batch[4].numpy().tolist())
                 predicts.extend(torch.argmax(ret, dim=1).cpu().numpy().tolist())
+        print(f'dev_loss: {loss / len(dataloader)}')
         return idx, result, labels, predicts
 
 def get_args():
@@ -377,7 +379,7 @@ if __name__ == '__main__':
         for i, item in enumerate(tqdm(result)):
             if predict[i] == label[i]:
                 right += 1
-            content += '{},{},{},{},{},{},{},{}\n' .format(idx[i][0], item[0], item[1], item[2], item[3], item[4], label[i], predict[i])
+            content += '{},{},{},{},{}\n' .format(idx[i][0], item[0], item[1], label[i], predict[i])
 
         res_data = {'idx': idx, 'result': result, 'label': label, 'predict': predict}
         logger.info("accuracy is {}".format(right/length))

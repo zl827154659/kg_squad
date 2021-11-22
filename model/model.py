@@ -53,6 +53,7 @@ class Model(AlbertPreTrainedModel):
         for name, p in self.albert.named_parameters():
             p.requires_grad = self.requires_grad[p]
 
+
     def score(self, h1, h2, h3, h4, h5):
         """
         h1, h2: [B, H] => logits: [B, 2]
@@ -67,10 +68,10 @@ class Model(AlbertPreTrainedModel):
 
     def forward(self, idx, input_ids, attention_mask, token_type_ids, labels):
         """
-        input_ids: [B, 5, L]
+        input_ids: [B, 2, L]
         labels: [B, ]
         """
-        # logits: [B, 5]
+        # logits: [B, 2]
 
         logits = self._forward(idx, input_ids, attention_mask, token_type_ids)
         loss = F.cross_entropy(logits, labels)
@@ -82,7 +83,7 @@ class Model(AlbertPreTrainedModel):
         return loss, right_num, self._to_tensor(idx.size(0), idx.device), logits
 
     def _forward(self, idx, input_ids, attention_mask, token_type_ids):
-        # [B, 5, L] => [B*5, L]
+        # [B, 2, L] => [B*2, L]
         flat_input_ids = input_ids.view(-1, input_ids.size(-1))
         flat_attention_mask = attention_mask.view(-1, attention_mask.size(-1))
         flat_token_type_ids = token_type_ids.view(-1, token_type_ids.size(-1))
@@ -96,21 +97,21 @@ class Model(AlbertPreTrainedModel):
         if self.kbert:
             flat_attention_mask = self.albert.get_attention_mask()
         
-        # outputs[0]: [B*5, L, H] => [B*5, H]
+        # outputs[0]: [B*2, L, H] => [B*2, H]
         if self.do_att_merge:
             h12 = self.att_merge(outputs[0], flat_attention_mask)
         else:
             h12 = outputs[0][:, 0, :]
 
         
-        # [B*5, H] => [B*5, 1] => [B, 5]
-        logits = self.scorer(h12).view(-1, 5)
+        # [B*2, H] => [B*2, 1] => [B, 2]
+        logits = self.scorer(h12).view(-1, 2)
 
         return logits
 
     def predict(self, idx, input_ids, attention_mask, token_type_ids):
         """
-        return: [B, 5]
+        return: [B, 2]
         """
         return self._forward(idx, input_ids, attention_mask, token_type_ids)
 

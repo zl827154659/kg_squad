@@ -37,6 +37,6 @@ class AttentionMerge(nn.Module):
         attention_probs = F.softmax(attention_probs * mask, dim=1)
         attention_probs = self.dropout(attention_probs)
 
-        context = torch.sum(attention_probs + values, dim=1)
+        context = torch.sum(attention_probs * values, dim=1)
         return context
 

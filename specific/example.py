@@ -4,7 +4,7 @@
 from utils.feature import Feature
 import pdb
 
-label_dict = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5, 'G': 6, 'X': 7}
+label_dict = {'A': 0, 'B': 1, 'X': 2}
 
 
 
@@ -14,17 +14,14 @@ label_dict = {'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5, 'G': 6, 'X': 7}
         text = ' question_stem  choice_text [SEP] qc_meaning [SEP] ac_meaning [SEP] triples
 """
 class ConceptNetExample:
-    def __init__(self, idx, choice1, choice2, choice3, choice4, choice5, label = -1):
+    def __init__(self, idx, choice1, choice2, label = -1):
         self.idx = idx
         self.text1 = choice1
         self.text2 = choice2
-        self.text3 = choice3
-        self.text4 = choice4
-        self.text5 = choice5
         self.label = int(label)
     
     def __str__(self):
-        return f"{self.idx} | {self.text1} | {self.text2} | {self.text3} | {self.text4} | {self.text5} | {self.label}"
+        return f"{self.idx} | {self.text1} | {self.text2} | {self.label}"
         
     def fl(self, tokenizer, max_seq_length):
         fs = self.f(tokenizer, max_seq_length)
@@ -33,17 +30,11 @@ class ConceptNetExample:
     def f(self, tokenizer, max_seq_length):
         tokens1 = tokenizer.tokenize(self.text1)
         tokens2 = tokenizer.tokenize(self.text2)
-        tokens3 = tokenizer.tokenize(self.text3)
-        tokens4 = tokenizer.tokenize(self.text4)
-        tokens5 = tokenizer.tokenize(self.text5)
 
 
         feature1 = Feature.make_single(self.idx, tokens1, tokenizer, max_seq_length)
         feature2 = Feature.make_single(self.idx, tokens2, tokenizer, max_seq_length)
-        feature3 = Feature.make_single(self.idx, tokens3, tokenizer, max_seq_length)
-        feature4 = Feature.make_single(self.idx, tokens4, tokenizer, max_seq_length)
-        feature5 = Feature.make_single(self.idx, tokens5, tokenizer, max_seq_length)
-        return (feature1, feature2, feature3, feature4, feature5)
+        return (feature1, feature2)
         
         
     @classmethod
@@ -87,7 +78,7 @@ class ConceptNetExample:
             label =  label_dict[json_obj['answerKey']]
         except:
             label = -1
-        while len(texts) < 5:
+        while len(texts) < 2:
             texts.append(mkinput(question_concept, {
                 'label': 'X',
                 'text': '',
@@ -109,9 +100,6 @@ class ConceptNetExample:
             json_obj['initial_id'],
             texts[0],
             texts[1],
-            texts[2],
-            texts[3],
-            texts[4],
             label,
         )
 
